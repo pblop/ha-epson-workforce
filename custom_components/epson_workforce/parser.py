@@ -19,6 +19,17 @@ RE_IPV4 = re.compile(
 RE_MAC = re.compile(r"\b([0-9A-F]{2}:){5}[0-9A-F]{2}\b", re.IGNORECASE)
 
 
+# Table keys are in natural language, and they don't contain any other
+# machine-friendly identifiers, so we have to map them the brittle way... :(
+MAINTENANCE_PRINT_INFO_KEY_TO_SENSOR_MAP = {
+    "total number of pages": "total_pages",
+    "total number of b&w pages": "bw_pages",
+    "total number of color pages": "color_pages",
+    "total number of 2-sided printing pages": "duplex_pages",
+    "total number of 1-sided printing pages": "simplex_pages",
+}
+
+
 # ----------------------------
 # Lightweight HTML page parser
 # ----------------------------
@@ -259,3 +270,50 @@ class EpsonHTMLParser:
         txt = self.soup.get_text(" ", strip=True)
         m = RE_EPSON_DEVNAME.search(txt)
         return m.group(0).upper() if m else None
+
+
+class EpsonMaintenanceHTMLParser:
+    """Parser for the Epson MENTINFO maintenance status page."""
+
+    def __init__(self, html_text: str):
+        self.soup: BeautifulSoup = BeautifulSoup(html_text, "html.parser")
+
+    def parse(self) -> dict[str, int] | None:
+        fieldsets = self.soup.find_all("fieldset", class_="group")
+        if not fieldsets:
+            return None
+
+        maintenance_data = {}
+
+        for fieldset in fieldsets:
+            legend = fieldset.find("legend")
+            if legend is None:
+                continue
+
+            legend_text = legend.get_text(strip=True).lower()
+            if legend_text == "printing information":
+                printing_info = self._parse_printing_info(fieldset)
+                if printing_info:
+                    maintenance_data["print_info"] = printing_info
+
+        return maintenance_data
+
+    def _parse_printing_info(self, fieldset) -> dict[str, int] | None:
+        """Extract page count metrics from the "Printing Information" fieldset
+        (total pages, b&w pages, color pages, duplex/simplex)."""
+        dl = fieldset.find("dl", class_="values")
+        if dl is None:
+            return None
+
+        dt_elements = dl.find_all("dt", class_="key", recursive=False)
+        dd_elements = dl.find_all("dd", class_="value", recursive=False)
+
+        printing_info = {}
+
+        for dt, dd in zip(dt_elements, dd_elements, strict=True):
+            key = dt.get_text(strip=True).lower().replace(":", "").strip()
+            value = dd.get_text(strip=True)
+            sensor_key = MAINTENANCE_PRINT_INFO_KEY_TO_SENSOR_MAP.get(key)
+            printing_info[sensor_key] = int(value)
+
+        return printing_info

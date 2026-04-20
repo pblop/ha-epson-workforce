@@ -5,13 +5,21 @@ from typing import Any
 
 import pytest
 
-from custom_components.epson_workforce.api import EpsonHTMLParser
+from custom_components.epson_workforce.parser import (
+    EpsonHTMLParser,
+    EpsonMaintenanceHTMLParser,
+)
 
 # ---- Discover all fixtures ----
 HERE = os.path.dirname(__file__)
 FIXTURES_DIR = os.path.join(HERE, "fixtures")
 ALL_FIXTURES = sorted(
     f for f in os.listdir(FIXTURES_DIR) if f.lower().endswith(".html")
+)
+ALL_MAINTENANCE_FIXTURES = sorted(
+    f
+    for f in os.listdir(os.path.join(FIXTURES_DIR, "MENTINFO"))
+    if f.lower().endswith(".html")
 )
 
 # ---- Per-file expectations (only list what you care to assert) ----
@@ -161,9 +169,28 @@ EXPECTATIONS: dict[str, dict[str, Any]] = {
     },
 }
 
+MAINTENANCE_EXPECTATIONS: dict[str, dict[str, Any]] = {
+    "ET-3700.html": {
+        "print_info": {
+            "total_pages": 17658,
+            "bw_pages": 3815,
+            "color_pages": 13843,
+            "duplex_pages": 360,
+            "simplex_pages": 17298,
+        }
+    },
+}
+
 
 def _read_fixture_text(name: str) -> str:
     with open(os.path.join(FIXTURES_DIR, name), encoding="utf-8", errors="ignore") as f:
+        return f.read()
+
+
+def _read_maintenance_fixture_text(name: str) -> str:
+    with open(
+        os.path.join(FIXTURES_DIR, "MENTINFO", name), encoding="utf-8", errors="ignore"
+    ) as f:
         return f.read()
 
 
@@ -177,9 +204,9 @@ def _assert_subset(
             assert isinstance(actual[k], dict), f"Expected dict at {path}/{k}"
             _assert_subset(actual[k], v, f"{path}/{k}" if path else k)
         else:
-            assert (
-                actual[k] == v
-            ), f"Mismatch at {path}/{k if path else k}: {actual[k]!r} != {v!r}"
+            assert actual[k] == v, (
+                f"Mismatch at {path}/{k if path else k}: {actual[k]!r} != {v!r}"
+            )
 
 
 @pytest.mark.parametrize("fixture_name", ALL_FIXTURES)
@@ -223,4 +250,32 @@ def test_each_fixture_parses_and_matches_expectations(fixture_name: str):
         if "wifi_direct" in spec:
             _assert_subset(
                 data.get("wifi_direct", {}), spec["wifi_direct"], path="wifi_direct"
+            )
+
+
+@pytest.mark.parametrize("fixture_name", ALL_MAINTENANCE_FIXTURES)
+def test_each_maintenance_fixture_parses_and_matches_expectations(fixture_name: str):
+    """
+    Tests that the HTML fixture for a given printer/scanner parses correctly and matches
+    expected values.
+    """
+    html_text = _read_maintenance_fixture_text(fixture_name)
+    parser = EpsonMaintenanceHTMLParser(html_text)
+    data = parser.parse()
+
+    # Always do basic sanity checks
+    assert data, "Parser returned empty result"
+    assert isinstance(data, dict), "Parser did not return a dict"
+
+    # Apply per-file expectations if present
+    spec = MAINTENANCE_EXPECTATIONS.get(fixture_name)
+    if spec:
+        # Flatten top-level fields we care about
+        flat_expect = {k: v for k, v in spec.items() if k not in ("print_info")}
+        if flat_expect:
+            _assert_subset(data, flat_expect)
+
+        if "print_info" in spec:
+            _assert_subset(
+                data.get("print_info", {}), spec["print_info"], path="print_info"
             )

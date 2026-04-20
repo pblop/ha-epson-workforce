@@ -1,18 +1,38 @@
 """Tests for EpsonWorkForceAPI using only the public API (no soup poking)."""
 
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 from custom_components.epson_workforce.api import EpsonWorkForceAPI
 
 
 # Helper: build an API instance whose update() reads our provided HTML
-def api_from_html(html: str) -> EpsonWorkForceAPI:
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = html.encode("utf-8")
+def api_from_html(
+    html: str, maintenance_info_html: str | None = None
+) -> EpsonWorkForceAPI:
+    def mock_urlopen_side_effect(req, *args, **kwargs):
+        ctx = MagicMock()
+        if "test" in req.full_url:
+            ctx.__enter__.return_value.read.return_value = html.encode("utf-8")
+            return ctx
+
+        if "maintenance" in req.full_url:
+            if maintenance_info_html is not None:
+                ctx.__enter__.return_value.read.return_value = (
+                    maintenance_info_html.encode("utf-8")
+                )
+                return ctx
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
 
     with patch("urllib.request.urlopen") as mock_urlopen:
-        mock_urlopen.return_value.__enter__.return_value = mock_resp
-        api = EpsonWorkForceAPI("127.0.0.1", "/test")
+        mock_urlopen.side_effect = mock_urlopen_side_effect
+        if maintenance_info_html is not None:
+            api = EpsonWorkForceAPI("127.0.0.1", "/test", "/maintenance")
+        else:
+            api = EpsonWorkForceAPI("127.0.0.1", "/test")
+
         api.update()
         api._ensure_parsed()
     return api
@@ -158,6 +178,78 @@ class TestEpsonWorkForceAPI:
         api = api_from_html(html)
         assert api.model == "Epson WF-3720 Series"
         assert api.mac_address == "AA:BB:CC:DD:EE:FF"
+
+    def test_maintenance_info_pages_extraction(self):
+        maintenance_info_html = """
+        <html><body>
+          <fieldset class="group">
+            <legend>Printing Information</legend>
+            <dl class="values">
+              <dt class="key"><span class="key">Total Number of Pages&nbsp;:</span></dt>
+              <dd class="value clearfix"><div class="preserve-white-space">17658</div></dd>
+              <dt class="key"><span class="key">Total Number of B&amp;W Pages&nbsp;:</span></dt>
+              <dd class="value clearfix"><div class="preserve-white-space">3815</div></dd>
+              <dt class="key"><span class="key">Total Number of Color Pages&nbsp;:</span></dt>
+              <dd class="value clearfix"><div class="preserve-white-space">13843</div></dd>
+              <dt class="key"><span class="key">Total Number of 2-Sided Printing Pages&nbsp;:</span></dt>
+              <dd class="value clearfix"><div class="preserve-white-space">360</div></dd>
+              <dt class="key"><span class="key">Total Number of 1-Sided Printing Pages&nbsp;:</span></dt>
+              <dd class="value clearfix"><div class="preserve-white-space">17298</div></dd>
+            </dl>
+          </fieldset>
+        </body></html>
+        """
+        api = api_from_html(
+            "<html><body><title>Test</title></body></html>",
+            maintenance_info_html=maintenance_info_html,
+        )
+        assert api.get_sensor_value("total_pages") == 17658
+        assert api.get_sensor_value("bw_pages") == 3815
+        assert api.get_sensor_value("color_pages") == 13843
+        assert api.get_sensor_value("duplex_pages") == 360
+        assert api.get_sensor_value("simplex_pages") == 17298
+
+    def test_maintenance_info_pages_extraction_missing_fields(self):
+        maintenance_info_html = """
+        <html><body>
+          <fieldset class="group">
+            <legend>Printing Information</legend>
+            <dl class="values">
+              <dt class="key"><span class="key">Total Number of Pages&nbsp;:</span></dt>
+              <dd class="value clearfix"><div class="preserve-white-space">500</div></dd>
+              <dt class="key"><span class="key">Total Number of B&amp;W Pages&nbsp;:</span></dt>
+              <dd class="value clearfix"><div class="preserve-white-space">100</div></dd>
+              <dt class="key"><span class="key">Total Number of Color Pages&nbsp;:</span></dt>
+              <dd class="value clearfix"><div class="preserve-white-space">400</div></dd>
+            </dl>
+          </fieldset>
+        </body></html>
+        """
+        api = api_from_html(
+            "<html><body><title>Test</title></body></html>",
+            maintenance_info_html=maintenance_info_html,
+        )
+        assert api.get_sensor_value("total_pages") == 500
+        assert api.get_sensor_value("bw_pages") == 100
+        assert api.get_sensor_value("color_pages") == 400
+        assert api.get_sensor_value("duplex_pages") is None
+        assert api.get_sensor_value("simplex_pages") is None
+
+    def test_maintenance_info_pages_extraction_no_fieldset(self):
+        maintenance_info_html = """
+        <html><body>
+          <div>No fieldset here</div>
+        </body></html>
+        """
+        api = api_from_html(
+            "<html><body><title>Test</title></body></html>",
+            maintenance_info_html=maintenance_info_html,
+        )
+        assert api.get_sensor_value("total_pages") is None
+        assert api.get_sensor_value("bw_pages") is None
+        assert api.get_sensor_value("color_pages") is None
+        assert api.get_sensor_value("duplex_pages") is None
+        assert api.get_sensor_value("simplex_pages") is None
 
     # -------------------------
     # Exception / None soup

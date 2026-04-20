@@ -4,20 +4,39 @@ from __future__ import annotations
 
 import ssl
 from typing import Any
+import urllib.error
 import urllib.request
 
-from .parser import EpsonHTMLParser
+from .parser import EpsonHTMLParser, EpsonMaintenanceHTMLParser
+
+
+def _get_html_from_url(context, url: str, timeout: float = 5.0) -> str:
+    req = urllib.request.Request(url)
+    req.add_header("Cookie", "EPSON_COOKIE_LANG=lang_b&1/lang_a&1")
+    with urllib.request.urlopen(req, context=context, timeout=timeout) as response:
+        data_bytes = response.read()
+    return data_bytes.decode("utf-8", errors="ignore")
 
 
 class EpsonWorkForceAPI:
-    def __init__(self, ip: str, path: str, timeout: float = 5.0):
-        self._resource = "http://" + ip + path
+    def __init__(
+        self,
+        ip: str,
+        main_path: str,
+        maintenance_path: str = None,
+        timeout: float = 5.0,
+    ):
+        self._main_resource = "http://" + ip + main_path
+        self._maintenance_resource = (
+            "http://" + ip + maintenance_path if maintenance_path else None
+        )
         self._ip = ip  # Store IP address for diagnostic sensor
         self.available: bool = True
         self._timeout = timeout
 
         # Internal
-        self._parser: EpsonHTMLParser | None = None
+        self._main_parser: EpsonHTMLParser | None = None
+        self._maintenance_parser: EpsonMaintenanceHTMLParser | None = None
         self._data: dict[str, Any] | None = None  # parsed dict cache
 
         # Defaults
@@ -50,18 +69,29 @@ class EpsonWorkForceAPI:
         """
         try:
             context = ssl._create_unverified_context()
-            with urllib.request.urlopen(
-                self._resource, context=context, timeout=self._timeout
-            ) as response:
-                data_bytes = response.read()
 
-            html_text = data_bytes.decode("utf-8", errors="ignore")
-            self._parser = EpsonHTMLParser(html_text, source=self._resource)
+            html_text = _get_html_from_url(context, self._main_resource, self._timeout)
+            self._main_parser = EpsonHTMLParser(html_text, source=self._main_resource)
+
+            if self._maintenance_resource is not None:
+                maintenance_html_text = _get_html_from_url(
+                    context,
+                    self._maintenance_resource,
+                    self._timeout,
+                )
+                self._maintenance_parser = EpsonMaintenanceHTMLParser(
+                    maintenance_html_text
+                )
+            else:
+                self._maintenance_parser = None
+
             self.available = True
             self._data = None  # invalidate cache
-        except Exception:
+        except Exception as e:
+            print(e)
             self.available = False
-            self._parser = None
+            self._main_parser = None
+            self._maintenance_parser = None
             self._data = None
 
     def get_sensor_value(self, sensor: str) -> int | str | None:
@@ -92,6 +122,17 @@ class EpsonWorkForceAPI:
             wifi_direct = data.get("wifi_direct", {})
             result = wifi_direct.get("Connection Method") or "Unknown"
 
+        # Page count metrics from MENTINFO
+        elif sensor in (
+            "total_pages",
+            "bw_pages",
+            "color_pages",
+            "duplex_pages",
+            "simplex_pages",
+        ):
+            page_counts = data.get("maintenance", {}).get("print_info", {})
+            result = page_counts.get(sensor)
+
         # Default to ink sensors
         else:
             inks: dict[str, int] = data.get("inks") or {}
@@ -102,9 +143,23 @@ class EpsonWorkForceAPI:
     def _ensure_parsed(self) -> None:
         if self._data is not None:
             return
-        if not self._parser:
+
+        # The main parser is required, so if it's missing, we consider the
+        # device unparsable.
+        if not self._main_parser:
             return
         try:
-            self._data = self._parser.parse()
+            self._data = self._main_parser.parse()
         except Exception:
             self._data = {}
+            return
+
+        # For the maintenance parser, it's optional. If it fails, we just skip
+        # it and don't include maintenance data.
+        if self._maintenance_parser:
+            try:
+                maint_data = self._maintenance_parser.parse()
+                if maint_data:
+                    self._data["maintenance"] = maint_data
+            except Exception:
+                pass
