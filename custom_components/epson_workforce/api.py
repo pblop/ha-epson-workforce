@@ -87,8 +87,7 @@ class EpsonWorkForceAPI:
 
             self.available = True
             self._data = None  # invalidate cache
-        except Exception as e:
-            print(e)
+        except Exception:
             self.available = False
             self._main_parser = None
             self._maintenance_parser = None
