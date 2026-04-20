@@ -17,11 +17,16 @@ _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "epson_workforce"
 
+CONF_MAINTENANCE_PATH = "maintenance_path"
+
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_HOST): cv.string,
         vol.Optional(
             CONF_PATH, default="/PRESENTATION/HTML/TOP/PRTINFO.HTML"
+        ): cv.string,
+        vol.Optional(
+            CONF_MAINTENANCE_PATH, default="/PRESENTATION/ADVANCED/INFO_MENTINFO/TOP"
         ): cv.string,
     }
 )
@@ -34,9 +39,10 @@ def validate_input(data: dict[str, Any]) -> dict[str, Any]:
     """
     host = data[CONF_HOST]
     path = data[CONF_PATH]
+    maintenance_path = data.get(CONF_MAINTENANCE_PATH) or None
 
     # Test the connection
-    api = EpsonWorkForceAPI(host, path)
+    api = EpsonWorkForceAPI(host, path, maintenance_path=maintenance_path)
 
     if not api.available:
         raise CannotConnect
@@ -122,6 +128,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         config_data = {
             CONF_HOST: self._connection_info[CONF_HOST],
             CONF_PATH: self._connection_info[CONF_PATH],
+            CONF_MAINTENANCE_PATH: self._connection_info.get(CONF_MAINTENANCE_PATH),
             CONF_NAME: device_name,
         }
 

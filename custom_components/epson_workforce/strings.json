@@ -6,7 +6,8 @@
         "description": "Configure your Epson WorkForce printer connection",
         "data": {
           "host": "IP Address",
-          "path": "Status Page Path"
+          "path": "Status Page Path",
+          "maintenance_path": "Maintenance Page Path (Optional)"
         }
       },
       "device_name": {
